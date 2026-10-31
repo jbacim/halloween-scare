@@ -20,7 +20,7 @@
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  let stream = null, track = null, torchSupported = false;
+  let stream = null, track = null, torchSupported = false, userPickedDevice = false;
   let facing = 'environment', deviceId = null;
   let armed = false, scaring = false, ignoreUntil = 0, prevFrame = null;
   let sampleTimer = null, audioCtx = null, wakeLock = null;
@@ -31,9 +31,10 @@
   }
   if (prefs.sens) sens.value = prefs.sens;
   if (prefs.facing) facing = prefs.facing;
+  if (prefs.deviceId) { deviceId = prefs.deviceId; userPickedDevice = !!prefs.userPicked; }
   const savePrefs = () => localStorage.setItem('scare-prefs', JSON.stringify({
     torch: optTorch.checked, screen: optScreen.checked, sound: optSound.checked,
-    preview: optPreview.checked, sens: sens.value, facing,
+    preview: optPreview.checked, sens: sens.value, facing, deviceId, userPicked: userPickedDevice,
   }));
 
   const setStatus = (msg) => { statusEl.innerHTML = msg; };
@@ -47,41 +48,86 @@
   }
 
   // ---------- Camera ----------
+  const FRONT_RE = /front|user|facetime|selfie/i;
+
+  async function openStream(videoConstraints) {
+    if (track) await setTorch(false);
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = track = null;
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: Object.assign({ width: { ideal: 640 }, height: { ideal: 480 } }, videoConstraints),
+      audio: false,
+    });
+    track = stream.getVideoTracks()[0];
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+  }
+
+  function readFacing() {
+    const settings = track.getSettings ? track.getSettings() : {};
+    deviceId = settings.deviceId || deviceId;
+    if (settings.facingMode) facing = settings.facingMode === 'user' ? 'user' : 'environment';
+    else if (FRONT_RE.test(track.label)) facing = 'user';
+    else if (track.label) facing = 'environment';
+    video.classList.toggle('mirror', facing === 'user');
+  }
+
+  // Android Chrome often reports the torch capability only once the camera is actually streaming.
+  async function detectTorch() {
+    if (!track.getCapabilities) return false;
+    for (let i = 0; i < 8; i++) {
+      if (track.getCapabilities().torch) return true;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  }
+
   async function startCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setStatus('❌ Camera not available. Use HTTPS and a modern browser.');
       return false;
     }
-    if (track) await setTorch(false);
-    if (stream) stream.getTracks().forEach((t) => t.stop());
-    stream = track = null;
-
-    const video_ = deviceId
-      ? { deviceId: { exact: deviceId } }
-      : { facingMode: { ideal: facing } };
-    Object.assign(video_, { width: { ideal: 640 }, height: { ideal: 480 } });
-
+    torchInfo.textContent = '🔦 Checking flashlight…';
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: video_, audio: false });
+      await openStream(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: facing } });
     } catch (err) {
-      setStatus(`❌ Camera error: ${err.name}. Allow camera access and reload.`);
-      return false;
+      if (!deviceId) {
+        setStatus(`❌ Camera error: ${err.name}. Allow camera access and reload.`);
+        return false;
+      }
+      // Saved camera no longer exists; fall back to facing mode.
+      deviceId = null;
+      try { await openStream({ facingMode: { ideal: facing } }); } catch (err2) {
+        setStatus(`❌ Camera error: ${err2.name}. Allow camera access and reload.`);
+        return false;
+      }
     }
-    track = stream.getVideoTracks()[0];
-    video.srcObject = stream;
-    await video.play().catch(() => {});
+    readFacing();
+    torchSupported = await detectTorch();
 
-    const settings = track.getSettings ? track.getSettings() : {};
-    deviceId = settings.deviceId || deviceId;
-    if (settings.facingMode) facing = settings.facingMode === 'user' ? 'user' : 'environment';
-    else if (/front|user|facetime/i.test(track.label)) facing = 'user';
-    video.classList.toggle('mirror', facing === 'user');
+    // Phones with several rear lenses often open one without a flashlight. Try the others.
+    if (!torchSupported && facing === 'environment' && !userPickedDevice) {
+      const original = deviceId;
+      const devices = (await navigator.mediaDevices.enumerateDevices())
+        .filter((d) => d.kind === 'videoinput' && d.deviceId !== original && !FRONT_RE.test(d.label));
+      for (const d of devices) {
+        torchInfo.textContent = `🔦 Looking for a camera with flashlight… (${d.label || d.deviceId.slice(0, 6)})`;
+        try { await openStream({ deviceId: { exact: d.deviceId } }); } catch { continue; }
+        readFacing();
+        if (facing === 'environment' && (torchSupported = await detectTorch())) break;
+      }
+      if (!torchSupported && devices.length) {
+        try { await openStream({ deviceId: { exact: original } }); readFacing(); } catch { /* keep current */ }
+      }
+    }
 
     const caps = track.getCapabilities ? track.getCapabilities() : {};
-    torchSupported = !!caps.torch;
     torchInfo.textContent = torchSupported
-      ? '🔦 Flashlight supported on this camera.'
-      : '🔦 Flashlight not available on this camera/browser. Screen strobe will be used instead.';
+      ? `🔦 Flashlight supported on "${track.label || 'camera'}".`
+      : `🔦 No flashlight on "${track.label || 'this camera'}" in this browser (torch capability: ${'torch' in caps ? caps.torch : 'missing'}). ` +
+        (/iPhone|iPad|iPod/.test(navigator.userAgent)
+          ? 'iOS browsers do not allow web pages to control the flashlight. Screen strobe is used instead.'
+          : 'Try Chrome on Android with the rear camera, or pick another camera from the list. Screen strobe is used instead.');
 
     await populateCameras();
     prevFrame = null;
@@ -106,7 +152,13 @@
 
   async function setTorch(on) {
     if (!track || !torchSupported) return;
-    try { await track.applyConstraints({ advanced: [{ torch: on }] }); } catch { /* ignore */ }
+    try {
+      await track.applyConstraints({ advanced: [{ torch: on }] });
+    } catch {
+      try { await track.applyConstraints({ torch: on }); } catch (err) {
+        torchInfo.textContent = `🔦 Flashlight error: ${err.name} ${err.message || ''}`;
+      }
+    }
   }
 
   // ---------- Motion detection ----------
@@ -300,11 +352,13 @@
   flipBtn.addEventListener('click', async () => {
     facing = facing === 'user' ? 'environment' : 'user';
     deviceId = null;
+    userPickedDevice = false;
     await startCamera();
   });
 
   camSelect.addEventListener('change', async () => {
     deviceId = camSelect.value;
+    userPickedDevice = true;
     await startCamera();
   });
 
