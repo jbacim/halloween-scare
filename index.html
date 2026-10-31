@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>🎃 Motion Scare</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="strobe" aria-hidden="true"></div>
+
+  <main id="ui">
+    <h1>🎃 Motion Scare 👻</h1>
+
+    <div id="preview-wrap">
+      <video id="video" playsinline muted autoplay></video>
+      <div id="meter"><div id="meter-fill"></div><div id="meter-threshold"></div></div>
+    </div>
+
+    <p id="status">Tap <b>Arm</b> to start. Camera access is required.</p>
+
+    <div class="row">
+      <button id="arm" class="big">Arm 🎃</button>
+      <button id="test">Test scare</button>
+    </div>
+
+    <fieldset>
+      <legend>Camera</legend>
+      <div class="row">
+        <button id="flip">🔄 Flip front/rear</button>
+        <select id="camera-select" aria-label="Camera"></select>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Settings</legend>
+      <label>Sensitivity <input id="sensitivity" type="range" min="1" max="100" value="60"> <span id="sens-val"></span></label>
+      <label><input id="opt-torch" type="checkbox" checked> Flashlight strobe (where supported)</label>
+      <label><input id="opt-screen" type="checkbox" checked> Screen strobe</label>
+      <label><input id="opt-sound" type="checkbox" checked> Scary sound</label>
+      <label><input id="opt-preview" type="checkbox" checked> Show camera preview</label>
+    </fieldset>
+
+    <p class="small" id="torch-info"></p>
+    <p class="small">⚠️ Contains flashing lights. Not suitable for people with photosensitive epilepsy.</p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
